@@ -1,0 +1,7 @@
+
+Things to add in the linker:
+
+Atari ST PRG target.
+Atari ST bootfloppy target.
+linker scripts.
+Optimizing linker ideas (see Levine's Linkers and Loaders).
