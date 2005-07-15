@@ -4,6 +4,7 @@
 (in-package :st-linker)
 
 (defparameter *aout-obj-header-length* 32) ; bytes
+(defparameter *aout-prg-header-length* 28) ; bytes
 
 ;; Object magic is STO^Z
 (defun check-magic (stream)
@@ -13,18 +14,19 @@
 
 (defstruct module
   (name)
-  (text-base 0)
-  (text-size)
-  (data-base 0)
-  (data-size)
-  (bss-base 0)
-  (bss-size)
+  (segment-bases)
+  (segment-sizes)
   (symbol-table-size)
   (entry-point)
-  (text-relocations-size)
-  (data-relocations-size)
   (symbols)
-  (relocs))
+  (relocations))
+
+(defun module-segment-base (module segment)
+  (cdr (assoc segment (module-segment-bases module))))
+(defun module-segment-size (module segment)
+  (cdr (assoc segment (module-segment-sizes module))))
+(defun module-segment-relocations (module segment)
+  (cdr (assoc segment (module-relocations module))))
 
 
 (defstruct relocation
@@ -52,7 +54,7 @@
 	      (make-relocation :address address
 			       :symbol (ldb (byte 24 8) rest)
 			       :pc-relative-p (= 1 (ldb (byte 1 7) rest))
-			       :length (ldb (byte 2 5) rest)
+			       :length (ash 1 (ldb (byte 2 5) rest))
 			       :extern-p (= 1 (ldb (byte 1 4) rest))))))
     table))
 
@@ -74,50 +76,68 @@
     (setf (linker-symbol-name (aref symbols i))
 	  (read-nul-terminated-string stream))))
 
+(defun read-object-header (stream object)
+  (let ((segment-sizes (mapcar (lambda (x)
+				 (cons x (read-big-endian-data stream 32)))
+			       '(text data bss)))
+	(symbol-count (read-big-endian-data stream 32))
+	(entry (read-big-endian-data stream 32))
+	(reloc-sizes (mapcar (lambda (x)
+			       (cons x (read-big-endian-data stream 32)))
+			     '(text data))))
+    (make-module :name object
+		 :segment-sizes segment-sizes
+		 :symbol-table-size symbol-count
+		 :entry-point entry
+		 :relocations reloc-sizes)))
+
+
+(defun read-module (filename)
+  (with-open-file (stream filename :element-type 'unsigned-byte)
+    (check-magic stream)
+    (let ((module (read-object-header stream filename)))
+      (file-position stream (+ *aout-obj-header-length*
+			       (module-segment-size module 'text)
+			       (module-segment-size module 'data)))
+      (let ((relocs (mapcar
+		     (lambda (x)
+		       (cons x 
+			     (read-relocations
+			      (module-segment-relocations module x)
+			      stream)))
+		     '(text data)))
+	    (symbols (read-symbol-table (module-symbol-table-size module)
+					stream filename)))
+	(read-string-table stream symbols)
+	(setf (module-relocations module) relocs
+	      (module-symbols module) symbols))
+      module)))
+
 
 (defun link-prg (objects &key (out-name "aout.prg"))
-  (let ((text-segment-size 0)
-	(data-segment-size 0)
-	(bss-size 0)
+  (let ((segment-sizes (list (cons 'text 0)
+			     (cons 'data 0)
+			     (cons 'bss 0)))
 	(modules nil))
     (dolist (object objects)
-      ;; load each object file, figure out sizes of segments
-      (with-open-file (stream object :element-type 'unsigned-byte)
-	(check-magic stream)
-	(let ((text (read-big-endian-data stream 32))
-	      (data (read-big-endian-data stream 32))
-	      (bss (read-big-endian-data stream 32))
-	      (symbol-count (read-big-endian-data stream 32))
-	      (entry (read-big-endian-data stream 32))
-	      (text-reloc (read-big-endian-data stream 32))
-	      (data-reloc (read-big-endian-data stream 32)))
-	  (file-position stream (+ *aout-obj-header-length*
-				   text data))
-	  (let ((relocs (read-relocations text-reloc stream))
-		(symbols (read-symbol-table symbol-count stream object)))
-	    (read-string-table stream symbols)
-	    (push (make-module :name object :text-size text :data-size data
-			       :bss-size bss :symbol-table-size symbol-count
-			       :entry-point entry
-			       :text-relocations-size text-reloc
-			       :data-relocations-size data-reloc
-			       :relocs relocs :symbols symbols)
-		  modules))
-	  (incf text-segment-size text)
-	  (incf data-segment-size data)
-	  (incf bss-size bss))))
+      (push (read-module object) modules)
+      ;; XXX merge symbols into global symbol table
+      (dolist (x segment-sizes)
+	(incf (cdr x) (module-segment-size (first modules) (car x)))))
 
-    (allocate-module-bases modules text-segment-size data-segment-size)
+    (allocate-module-bases modules segment-sizes)
 
-    (with-open-file (prg-stream out-name :direction :output
+    (with-open-file (prg-stream out-name :direction :io
 				:element-type 'unsigned-byte
 				:if-exists :new-version 
 				:if-does-not-exist :create)
       ;; start writing header
       (write-big-endian-data prg-stream #x601a 16)
-      (write-big-endian-data prg-stream text-segment-size 32)
-      (write-big-endian-data prg-stream data-segment-size 32)
-      (write-big-endian-data prg-stream bss-size 32)
+      (mapcar (lambda (x)
+		(write-big-endian-data prg-stream
+				       (cdr (assoc x segment-sizes))
+				       32))
+	      '(text data bss))
       (write-big-endian-data prg-stream 0 32) ; no symbol table
       (write-big-endian-data prg-stream 0 (* 2 32)) ; reserved, flags
       (write-big-endian-data prg-stream 0 16) ; absflag
@@ -128,54 +148,112 @@
 				    :element-type 'unsigned-byte)
 	  (file-position obj-stream *aout-obj-header-length*) ;start of text segment
 	  (copy-from-stream obj-stream prg-stream 
-			    (module-text-size module))))
+			    (module-segment-size module 'text))))
       (dolist (module modules)
 	;; over each object, read data segments
 	(with-open-file (obj-stream (module-name module)
 				    :element-type 'unsigned-byte)
 	  (file-position obj-stream (+ *aout-obj-header-length*
-				       (module-text-size module)))
+				       (module-segment-size module 'text)))
 	  (copy-from-stream obj-stream prg-stream
-			    (module-data-size module))))
+			    (module-segment-size module 'data))))
 
-      (let ((relocs (process-link-time-relocations prg-stream modules)))
-	(output-load-time-relocations prg-stream relocs)))))
+      (let ((fixups (process-link-time-relocations prg-stream modules)))
+	(output-load-time-relocations prg-stream fixups)))))
 
 
-(defun allocate-module-bases (modules text-segment-size data-segment-size)
-  (let ((cur-text-base 0)
-	(cur-data-base text-segment-size)
-	(cur-bss-base (+ text-segment-size data-segment-size)))
+(defun allocate-module-bases (modules segment-sizes)
+  (let ((bases (list (cons 'text 0)
+		     (cons 'data #1=(cdr (assoc 'text segment-sizes)))
+		     (cons 'bss (+ (cdr (assoc 'data segment-sizes))
+				   #1#)))))
     (dolist (module modules)
-      (setf (module-text-base module) cur-text-base
-	    (module-data-base module) cur-data-base
-	    (module-bss-base module) cur-bss-base)
-      (format t "~&relocating ~A at ~A, ~A, ~A" (module-name module)
-	      (module-text-base module) (module-data-base module) 
-	      (module-bss-base module))
-      (incf cur-text-base (module-text-size module))
-      (incf cur-data-base (module-data-size module))
-      (incf cur-bss-base (module-bss-size module)))))
+      (setf (module-segment-bases module) (copy-tree bases))
+      (format t "~&relocating ~A at ~A" (module-name module)
+	      (module-segment-bases module))
+      (dolist (x bases)
+	(incf (cdr x) (module-segment-size module (car x)))))))
 
 (defun process-link-time-relocations (stream modules)
-  (let ((relocs nil))
+  (let ((fixups nil)
+	(position (file-position stream)))
     (dolist (module modules)
-      ;; for each relocation, try and process.
-      ;; if it needs to be relocated at load time, adjust for long
-      ;; relocs, and push it onto the reloc stack.
-      )))
+      (mapcar
+       (lambda (segment)
+	 (dovector (reloc (module-segment-relocations module segment))
+	   (format t "~&doing reloc ~A" reloc)
+	   (awhen (if (relocation-pc-relative-p reloc)
+		      (if (relocation-extern-p reloc)
+			  (relocate-pcrel-extern stream module segment reloc)
+			  (relocate-pc-relative stream module segment reloc))
+		      (if (relocation-extern-p reloc)
+			  (relocate-absolute-extern stream module segment reloc)
+			  (relocate-absolute stream module segment reloc)))
+	     (push it fixups))))
+       '(text data)))
+    (file-position stream position)
+    (sort fixups #'<=)))
 
-(defun output-load-time-relocations (stream relocs)
-  (write-big-endian-data stream 0 32)	;fixup offset
-  ;; output relocations in PC order... make sure relocation is on word
-  ;; boundry, and fix smaller relocs so that they're long (eg, word
-  ;; fixups need to start two bytes earlier).  if delta from current
-  ;; position to next fixup > 254, output byte 1 until < 254.  then
-  ;; output offset of fixup.
-  (write-byte 0 stream))		; no more relocs.
+(defun file-offset-of-address (address)
+  (+ address *aout-prg-header-length*))
+
+(defun relocate-absolute (stream module segment reloc)
+  (setf (relocation-symbol reloc) (nth (relocation-symbol reloc)
+				       '(text data bss)))
+  (let ((base (module-segment-base module (relocation-symbol reloc))))
+    ;; add base to value
+    (incf (relocation-address reloc) (module-segment-base module segment))
+    (file-position stream
+		   (file-offset-of-address (relocation-address reloc)))
+    (let* ((length (* (relocation-length reloc) 8))
+	   (value (read-big-endian-data stream length)))
+      (file-position stream
+		     (file-offset-of-address (relocation-address reloc)))
+      (write-big-endian-data stream (+ value base) length)
+      ;; adjust address according to length
+      (when (/= length 32)
+	(decf (relocation-address reloc) (ceiling (- 32 length) 8))))
+    ;; return fixup
+    (relocation-address reloc)))
+
+(defun relocate-absolute-extern (stream module segment reloc)
+  nil)
+
+(defun relocate-pcrel-extern (stream module segment reloc)
+  nil)
+(defun relocate-pc-relative (stream module segment reloc)
+  (format t "~&wish i could say this was being handled: ~A ~A ~A"
+	  #1=(module-segment-base module segment)
+	  #2=(module-segment-base module (relocation-symbol reloc))
+	  (- #1# #2#))
+  nil)
+
+(defun output-load-time-relocations (stream fixups)
+  (let ((delta (or (and fixups (first fixups)) 0)))
+    (write-big-endian-data stream delta 32) ;fixup offset
+    (format t "~&outputting delta of ~A" delta)
+    ;; output relocations in PC order... make sure relocation is on word
+    ;; boundry, and fix smaller relocs so that they're long (eg, word
+    ;; fixups need to start two bytes earlier).  if delta from current
+    ;; position to next fixup > 254, output byte 1 until < 254.  then
+    ;; output offset of fixup.
+    (dolist (addr (cdr fixups))
+      (assert (= 0 (mod addr 2)))
+      (format t "~&outputting fixup ~A, delta ~A" addr delta)
+      (do () ((< (- addr delta) 254))
+	(write-byte 1 stream)
+	(incf delta 254))
+      (write-byte (- addr delta) stream)
+      (setf delta addr))
+    (write-byte 0 stream)))		; no more relocs.
 
 
 ;;;; UTILITIES
+
+(defmacro dovector ((var vector) &body body)
+  "Iterate VAR across VECTOR."
+  `(loop for ,var across ,vector
+         do (progn ,@body)))
 
 (defun copy-from-stream (source destination length
 			 &key (element-type 'unsigned-byte))

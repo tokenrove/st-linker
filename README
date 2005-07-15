@@ -1,4 +1,13 @@
 
+An eventual goal for this linker once it reaches beyond simple Atari
+ST output, is to use a much more general object and link script
+format, to provide broad platform support.  I'm imagining a small
+sexp-based DSL for describing the encodings of relocations and
+whatnot, that would be present in the object file.  The real test
+would be seeing how it supported modern RISC architecture instruction
+encoding.
+
+
 Things to add in the linker:
 
 Atari ST PRG target.
