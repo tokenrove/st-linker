@@ -10,7 +10,8 @@ encoding.
 
 Things to add in the linker:
 
-Atari ST PRG target.
-Atari ST bootfloppy target.
-linker scripts.
+Atari ST bootfloppy target?
+  Maybe just some kind of special relocation output for a little
+  loader we'd stick at the beginning of the image.
+linker scripts!
 Optimizing linker ideas (see Levine's Linkers and Loaders).
