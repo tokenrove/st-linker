@@ -53,7 +53,6 @@
     ;; output offset of fixup.
     (dolist (addr (cdr fixups))
       (assert (= 0 (mod addr 2)))
-      (format t "~&outputting fixup ~A, delta ~A" addr delta)
       (do () ((< (- addr delta) 254))
 	(write-byte 1 stream)
 	(incf delta 254))

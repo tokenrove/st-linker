@@ -7,6 +7,10 @@ whatnot, that would be present in the object file.  The real test
 would be seeing how it supported modern RISC architecture instruction
 encoding.
 
+Issues:
+- - test for bad relocations (I saw a local TEXT->TEXT once)
+- - watch for unaligned output, warn.
+
 
 Things to add in the linker:
 

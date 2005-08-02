@@ -157,6 +157,10 @@
 (defun relocate-abs-extern (stream module segment reloc)
   (let ((symbol (find-first-non-extern-instance (relocation-symbol reloc)))
 	(length (relocation-length reloc)))
+    (unless symbol
+      (error "~A is an undefined symbol referenced in ~A."
+	     (linker-symbol-name (relocation-symbol reloc))
+	     (module-name (linker-symbol-module (relocation-symbol reloc)))))
     (patch-stream (value length stream (file-offset-of-address
 					(relocation-address reloc)))
       (setf value (+ (linker-symbol-value symbol)
@@ -185,7 +189,9 @@ symbol table, or NIL."
 			(module-segment-base (linker-symbol-module symbol)
 					     (linker-symbol-type symbol)))
 		     (relocation-address reloc)))
-      (when (oddp value) (decf value)))) ; fix 24-bit pc-rel problem.
+      (when (oddp value)
+	(error "This should have been fixed.")
+	(decf value))))			; fix 24-bit pc-rel problem.
   nil)					; no fixup.
 
 (defun relocate-pc-relative (stream module segment reloc)
