@@ -42,6 +42,13 @@
 
 
 
+(defun merge-symbols-into-global-table (module global-symbols)
+  (dovector (sym (module-symbols module))
+    (setf (linker-symbol-module sym) module)
+    (sif (gethash (linker-symbol-name sym) global-symbols)
+	 (push sym it)
+	 (setf it (list sym)))))
+
 (defun link (objects &key (out-name "a.out")
 	     (format :gemdos-prg)
 	     (entry-point 0))
@@ -50,23 +57,19 @@ OBJECTS into a binary called OUT-NAME.  The objects are linked
 serially by list order."
   (setf *global-symbols* (make-hash-table :test #'equal))
   (let* ((segment-sizes (list (cons 'text 0)
-			     (cons 'data 0)
-			     (cons 'bss 0)))
-	 (modules (mapcar
-		   (lambda (object)
-		     "Read a module with filename OBJECT, merge symbols
-into global symbol table, and update segment sizes."
-		     (let ((module (read-module object)))
-		       ;; merge symbols into global symbol table
-		       (dovector (sym (module-symbols module))
-			 (setf (linker-symbol-module sym) module)
-			 (sif (gethash (linker-symbol-name sym) *global-symbols*)
-			      (push sym it)
-			      (setf it (list sym))))
-		       (dolist (x segment-sizes)
-			 (incf (cdr x) (module-segment-size module (car x))))
-		       module))
-		   objects)))
+			      (cons 'data 0)
+			      (cons 'bss 0)))
+	 (modules
+	  (mapcar
+	   (lambda (object)
+	     "Read a module with filename OBJECT, merge symbols into
+global symbol table, and update segment sizes."
+	     (let ((module (read-module object)))
+	       (merge-symbols-into-global-table module *global-symbols*)
+	       (dolist (x segment-sizes)
+		 (incf (cdr x) (module-segment-size module (car x))))
+	       module))
+	   objects)))
 
     (allocate-module-bases modules segment-sizes)
 
@@ -76,11 +79,11 @@ into global symbol table, and update segment sizes."
 
 (defun allocate-module-bases (modules segment-sizes)
   (let ((bases (list (cons 'text 0)
-		     (cons 'data #1=(cdr (assoc 'text segment-sizes)))
+		     (cons 'data (cdr (assoc 'text segment-sizes)))
 		     (cons 'bss (+ (cdr (assoc 'data segment-sizes))
-				   #1#)))))
+				   (cdr (assoc 'text segment-sizes)))))))
     (dolist (module modules)
-      (setf (module-segment-bases module) (copy-list bases))
+      (setf (module-segment-bases module) (copy-alist bases))
       (format t "~&relocating ~A at ~A" (module-name module)
 	      (module-segment-bases module))
       (dolist (x bases)
@@ -130,8 +133,8 @@ onto the fixup list, which it returns, in ascending order of address."
 
 ;;; XXX should use more gensyms in case other things want to be called
 ;;; exactly once.
-(defmacro patch-stream ((var length
-			 stream &optional (position (file-position stream)))
+(defmacro patch-stream ((var length stream
+			 &optional (position (file-position stream)))
 			&body body)
   (let ((pos-holder (gensym)))
     `(let ((,pos-holder ,position))
