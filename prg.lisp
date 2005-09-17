@@ -3,12 +3,13 @@
 
 (in-package :st-linker)
 
-(defparameter *aout-prg-header-length* 28) ; bytes
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *aout-prg-header-length* 28)) ; bytes
 
 (defun link-prg (modules segment-sizes out-name)
   (with-open-file (prg-stream out-name :direction :io
 			      :element-type 'unsigned-byte
-			      :if-exists :new-version 
+			      :if-exists :supersede
 			      :if-does-not-exist :create)
     ;; start writing header
     (write-big-endian-data prg-stream #x601a 16)
@@ -24,6 +25,7 @@
     (dolist (module modules)
       ;; over each object, read text segments
       (with-open-file (obj-stream (module-name module)
+				  :direction :input
 				  :element-type 'unsigned-byte)
 	(file-position obj-stream *aout-obj-header-length*) ;start of text segment
 	(copy-from-stream obj-stream prg-stream 
@@ -31,6 +33,7 @@
     (dolist (module modules)
       ;; over each object, read data segments
       (with-open-file (obj-stream (module-name module)
+				  :direction :input
 				  :element-type 'unsigned-byte)
 	(file-position obj-stream (+ *aout-obj-header-length*
 				     (module-segment-size module 'text)))

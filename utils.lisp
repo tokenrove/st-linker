@@ -3,11 +3,13 @@
 
 ;;;; UTILITIES
 
+;;; XXX should look at norvig's dovector
 (defmacro dovector ((var vector) &body body)
   "Iterate VAR across VECTOR."
   `(loop for ,var across ,vector
          do (progn ,@body)))
 
+;;; XXX should extend this to reuse buffer when possible?
 (defun copy-from-stream (source destination length
 			 &key (element-type 'unsigned-byte))
   "Copy LENGTH bytes of data from open stream SOURCE to open stream

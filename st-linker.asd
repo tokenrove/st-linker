@@ -9,7 +9,7 @@
   ((:file "package")
    (:file "utils" :depends-on ("package"))
    (:file "linker" :depends-on ("package" "utils"))
-   (:file "prg" :depends-on ("package"))
-   (:file "aout" :depends-on ("package"))
-   (:file "raw-binary" :depends-on ("package"))))
+   (:file "prg" :depends-on ("package" "linker"))
+   (:file "aout" :depends-on ("package" "linker"))
+   (:file "raw-binary" :depends-on ("package" "linker"))))
 

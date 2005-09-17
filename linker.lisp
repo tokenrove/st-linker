@@ -45,24 +45,28 @@
 (defun link (objects &key (out-name "a.out")
 	     (format :gemdos-prg)
 	     (entry-point 0))
-  ""
+  "Link the objects specified by the filenames contained in the list
+OBJECTS into a binary called OUT-NAME.  The objects are linked
+serially by list order."
   (setf *global-symbols* (make-hash-table :test #'equal))
-  (let ((segment-sizes (list (cons 'text 0)
+  (let* ((segment-sizes (list (cons 'text 0)
 			     (cons 'data 0)
 			     (cons 'bss 0)))
-	(modules nil))
-    (dolist (object objects)
-      (push (read-module object) modules)
-      ;; merge symbols into global symbol table
-      (dovector (sym (module-symbols (first modules)))
-	(setf (linker-symbol-module sym) (first modules))
-	(sif (gethash (linker-symbol-name sym) *global-symbols*)
-	     (push sym it)
-	     (setf it (list sym))))
-      (dolist (x segment-sizes)
-	(incf (cdr x) (module-segment-size (first modules) (car x)))))
-
-    (setf modules (nreverse modules))
+	 (modules (mapcar
+		   (lambda (object)
+		     "Read a module with filename OBJECT, merge symbols
+into global symbol table, and update segment sizes."
+		     (let ((module (read-module object)))
+		       ;; merge symbols into global symbol table
+		       (dovector (sym (module-symbols module))
+			 (setf (linker-symbol-module sym) module)
+			 (sif (gethash (linker-symbol-name sym) *global-symbols*)
+			      (push sym it)
+			      (setf it (list sym))))
+		       (dolist (x segment-sizes)
+			 (incf (cdr x) (module-segment-size module (car x))))
+		       module))
+		   objects)))
 
     (allocate-module-bases modules segment-sizes)
 
@@ -76,7 +80,7 @@
 		     (cons 'bss (+ (cdr (assoc 'data segment-sizes))
 				   #1#)))))
     (dolist (module modules)
-      (setf (module-segment-bases module) (copy-tree bases))
+      (setf (module-segment-bases module) (copy-list bases))
       (format t "~&relocating ~A at ~A" (module-name module)
 	      (module-segment-bases module))
       (dolist (x bases)
@@ -96,6 +100,9 @@
 
 
 (defun process-link-time-relocations (stream modules)
+  "Goes through the relocations for each module, applies whichever
+relocations can be done at link time, and then pushes the remainder
+onto the fixup list, which it returns, in ascending order of address."
   (let ((fixups nil)
 	(position (file-position stream)))
     (dolist (module modules)
@@ -121,7 +128,7 @@
   (+ address *current-header-length*))
 
 
-;;; XXX should use more gensyms in ca e other things want to be called
+;;; XXX should use more gensyms in case other things want to be called
 ;;; exactly once.
 (defmacro patch-stream ((var length
 			 stream &optional (position (file-position stream)))
@@ -136,6 +143,7 @@
 
 
 (defun relocate-absolute (stream module segment reloc)
+  (declare (ignore segment))
   (let ((base (module-segment-base module (relocation-symbol reloc)))
 	(length (relocation-length reloc)))
     (patch-stream (value length stream (file-offset-of-address
@@ -155,6 +163,7 @@
   (relocation-address reloc))
 
 (defun relocate-abs-extern (stream module segment reloc)
+  (declare (ignore segment module))
   (let ((symbol (find-first-non-extern-instance (relocation-symbol reloc)))
 	(length (relocation-length reloc)))
     (unless symbol
@@ -181,6 +190,7 @@ symbol table, or NIL."
 	     sym-list)))
 
 (defun relocate-pcrel-extern (stream module segment reloc)
+  (declare (ignore segment module))
   (let ((symbol (find-first-non-extern-instance (relocation-symbol reloc)))
 	(length (relocation-length reloc)))
     (patch-stream (value length stream (file-offset-of-address
@@ -195,5 +205,6 @@ symbol table, or NIL."
   nil)					; no fixup.
 
 (defun relocate-pc-relative (stream module segment reloc)
+  (declare (ignore segment module stream reloc))
   (error "~&pcrel: wish i could say this was being handled.")
   nil)
